@@ -158,51 +158,52 @@ void HAL_UART_MspInit(UART_HandleTypeDef *huart)
  * @param       huart: UART句柄类型指针
  * @retval      无
  */
+/* Single interrupt producer; foreground consumer. No command execution in ISR. */
+#define UART_QUEUE_SIZE 512U
+static volatile uint8_t rx_queue[UART_QUEUE_SIZE];
+static volatile uint16_t rx_head, rx_tail;
+static volatile uint8_t rx_fault;
+
+int usart_read_char(void)
+{
+    int result = -1;
+    uint32_t saved = __get_PRIMASK();
+    __disable_irq();
+    if (rx_fault) {
+        rx_tail = rx_head;
+        rx_fault = 0;
+        result = -2;
+    } else if (rx_tail != rx_head) {
+        result = rx_queue[rx_tail];
+        rx_tail = (uint16_t)((rx_tail + 1U) % UART_QUEUE_SIZE);
+    }
+    __set_PRIMASK(saved);
+    return result;
+}
+
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
-    if (huart->Instance == USART_UX)                          /* 如果是串口X */
-    {
-        if ((g_usart_rx_sta & 0x8000) == 0)                   /* 接收未完成 */
-        {
-            if (g_usart_rx_sta & 0x4000)                      /* 接收到了0x0d? */
-            {
-                if (g_rx_buffer[0] != 0x0a)                   /* 接收到了0x0a? (必须先接收到0x0d,才检查0x0a) */
-                {
-                    g_usart_rx_sta = 0;                       /* 接收错误,重新开始 */
-                }
-                else 
-                {
-                    g_usart_rx_sta |= 0x8000;                 /* 收到了0x0a,标记接收完成了 */
-                }
-            }
-            else                                              /* 还没收到0X0d */
-            {
-                if (g_rx_buffer[0] == 0x0d)
-                {
-                    g_usart_rx_sta |= 0x4000;                 /* 标记接收到了0x0d */
-                }
-                else
-                {
-                    g_usart_rx_buf[g_usart_rx_sta & 0X3FFF] = g_rx_buffer[0];   /* 存储数据到 g_usart_rx_buf */
-                    g_usart_rx_sta++;
-                  
-                    if (g_usart_rx_sta > (USART_REC_LEN - 1))
-                    {
-                        g_usart_rx_sta = 0;                   /* 接收数据溢出,重新开始接收 */
-                    }
-                }
-            }
+    if (huart->Instance == USART_UX) {
+        uint16_t next = (uint16_t)((rx_head + 1U) % UART_QUEUE_SIZE);
+        if (next == rx_tail) rx_fault = 1;
+        if (!rx_fault) {
+            rx_queue[rx_head] = g_rx_buffer[0];
+            rx_head = next;
         }
-        
-        HAL_UART_Receive_IT(&g_uart1_handle, (uint8_t *)g_rx_buffer, RXBUFFERSIZE);
+        HAL_UART_Receive_IT(huart, g_rx_buffer, RXBUFFERSIZE);
     }
 }
 
-/**
- * @brief       串口X中断服务函数
- * @param       无
- * @retval      无
- */
+void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
+{
+    if (huart->Instance == USART_UX) {
+        rx_fault = 1;
+        /* HAL ends blocking-error reception before this callback. */
+        if (huart->RxState == HAL_UART_STATE_READY)
+            HAL_UART_Receive_IT(huart, g_rx_buffer, RXBUFFERSIZE);
+    }
+}
+
 void USART_UX_IRQHandler(void)
 { 
 #if SYS_SUPPORT_OS                        /* 如果使用OS */

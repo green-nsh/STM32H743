@@ -51,6 +51,9 @@ extern uint8_t g_rx_buffer[RXBUFFERSIZE];       /* HAL库USART接收Buffer */
 
 void usart_init(uint32_t baudrate);             /* 串口初始化函数 */
 
+/* Returns byte 0..255, -1 if empty, -2 on lost/corrupt input. */
+int usart_read_char(void);
+
 #endif
 
 
